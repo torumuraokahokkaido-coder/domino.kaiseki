@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ドミノ運動解析アプリ</title>
-    <!-- Chart.jsライブラリ読み込み -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: sans-serif; padding: 10px; background: #f4f4f9; color: #333; }
@@ -21,6 +20,7 @@
         .info-text { font-size: 12px; color: #555; margin-top: 5px; }
         .legend-btn { margin: 2px; padding: 4px 8px; font-size: 12px; background: #007bff; color: #fff; border: none; border-radius: 3px; cursor: pointer; }
         .legend-btn.off { background: #ccc; color: #333; }
+        .edit-modes label { margin-right: 15px; cursor: pointer; font-weight: bold; }
         
         @media print {
             body { background: #fff; }
@@ -56,18 +56,24 @@
     <div class="panel no-print">
         <strong>2. トラッキング設定 (赤い点の設定)</strong><br>
         <p class="info-text">
-            ・「赤い点を自動検出」を押すと動画内の赤色を探します。<br>
-            ・設定された点は<strong>ドラッグして位置を微調整</strong>できます。<br>
-            ・追跡中に点がずれた場合は、「一時停止」を押して点を正しい位置にドラッグ修正してから再開できます。
+            ・自動検出後、下のラジオボタンを切り替えて点の追加・削除・微調整を行ってください。<br>
+            ・追跡中に点がずれた場合は「一時停止」を押し、移動モードで点を正しい位置に直してから再開できます。
         </p>
-        <div style="margin-top:10px;">
+        <div style="margin-top:10px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
             <button id="btnAutoDetect" style="background:#e83e8c;">赤い点を自動検出</button>
-            <button id="btnSetPoints" style="background:#28a745;">手動設定モード</button>
             <button id="btnClearPoints" style="background:#6c757d;">リセット</button>
             
-            <button id="btnAnalyze" style="background:#ffc107; color:#000; margin-left: 20px;">▶ 自動追跡を開始</button>
-            <button id="btnPauseTrack" style="background:#dc3545; display:none; margin-left: 20px;">⏸ 一時停止 (手動修正)</button>
-            <button id="btnResumeTrack" style="background:#28a745; display:none; margin-left: 20px;">▶ 追跡再開</button>
+            <div class="edit-modes" style="background: #fff; padding: 5px 15px; border-radius: 5px; border: 1px solid #ccc;">
+                <strong>点の編集: </strong>
+                <label><input type="radio" name="editMode" value="move" checked> 移動(ドラッグ)</label>
+                <label><input type="radio" name="editMode" value="add"> 追加(タップ)</label>
+                <label><input type="radio" name="editMode" value="delete"> 削除(タップ)</label>
+            </div>
+        </div>
+        <div style="margin-top: 15px;">
+            <button id="btnAnalyze" style="background:#ffc107; color:#000;">▶ 自動追跡を開始</button>
+            <button id="btnPauseTrack" style="background:#dc3545; display:none;">⏸ 一時停止 (手動修正)</button>
+            <button id="btnResumeTrack" style="background:#28a745; display:none;">▶ 追跡再開</button>
         </div>
     </div>
 
@@ -91,7 +97,6 @@
         <div id="maxSpeedInfo"></div>
     </div>
 
-    <!-- 波の伝播速度グラフ -->
     <div class="chart-container">
         <canvas id="waveVelChart"></canvas>
     </div>
@@ -115,8 +120,8 @@
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
     let scaleRatio = 1; 
-    let mode = 'none'; 
-    let trackingPaused = false; // 追跡の一時停止フラグ
+    let mode = 'set_points'; // デフォルトで点編集モード
+    let trackingPaused = false; 
     
     let calibStart = null;
     let calibEnd = null;
@@ -157,7 +162,6 @@
     document.getElementById('btnPrint').onclick = () => window.print();
 
     document.getElementById('btnCalibrate').onclick = () => { mode = 'calibrate'; calibStart = null; calibEnd = null; alert("画面をドラッグして基準線を引いてください。"); };
-    document.getElementById('btnSetPoints').onclick = () => { mode = 'set_points'; alert("タップして点を追加、または既存の点をドラッグして移動できます。"); };
     document.getElementById('btnClearPoints').onclick = () => { trackers = []; drawOverlay(); };
 
     // --- 赤い点の自動検出 ---
@@ -173,6 +177,7 @@
                 let r = frameData.data[idx];
                 let g = frameData.data[idx+1];
                 let b = frameData.data[idx+2];
+                // 赤色の判定
                 if(r > 150 && g < 100 && b < 100 && (r > g * 1.5)) {
                     redPixels.push({x, y});
                 }
@@ -195,16 +200,22 @@
             if(!found) clusters.push({cx: p.x, cy: p.y, points: [p]});
         }
         
-        clusters.sort((a,b) => a.cx - b.cx);
-        trackers = clusters.map((c, i) => ({
-            id: i + 1, x: c.cx, y: c.cy, initial: {x: c.cx, y: c.cy}, history: []
+        trackers = clusters.map(c => ({
+            x: c.cx, y: c.cy, initial: {x: c.cx, y: c.cy}, history: []
         }));
+        sortAndReassignIDs(); // 左から右に番号を振る
         
-        drawOverlay();
         mode = 'set_points'; 
-        alert(trackers.length + " 個の赤い点を検出しました。ずれている場合はドラッグして修正してください。");
+        alert(trackers.length + " 個の赤い点を検出しました。\n足りない点や不要な点があれば「追加」「削除」モードで修正してください。");
     };
 
+    function sortAndReassignIDs() {
+        trackers.sort((a,b) => a.x - b.x);
+        trackers.forEach((t, i) => t.id = i + 1);
+        drawOverlay();
+    }
+
+    // --- タッチ＆マウスイベント (追加・削除・移動) ---
     function getPointerPos(e) {
         const rect = canvas.getBoundingClientRect();
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -224,20 +235,28 @@
     function pointerDown(e) {
         const pos = getPointerPos(e);
         if(mode === 'calibrate') {
-            isDragging = true;
-            calibStart = pos; calibEnd = pos;
+            isDragging = true; calibStart = pos; calibEnd = pos;
         } else if(mode === 'set_points') {
-            let clickedExisting = null;
-            for(let p of trackers) {
-                if(Math.hypot(p.x - pos.x, p.y - pos.y) < 20) {
-                    clickedExisting = p;
-                    break;
+            const editMode = document.querySelector('input[name="editMode"]:checked').value;
+            
+            // クリックした位置に最も近い点を探す (半径20px以内)
+            let clickedExistingIdx = -1;
+            let minDist = 20;
+            trackers.forEach((p, idx) => {
+                let d = Math.hypot(p.x - pos.x, p.y - pos.y);
+                if(d < minDist) { minDist = d; clickedExistingIdx = idx; }
+            });
+
+            if (editMode === 'delete') {
+                if(clickedExistingIdx !== -1) {
+                    trackers.splice(clickedExistingIdx, 1);
+                    sortAndReassignIDs();
                 }
-            }
-            if(clickedExisting) draggedPoint = clickedExisting;
-            else {
-                trackers.push({ id: trackers.length + 1, x: pos.x, y: pos.y, initial: {x: pos.x, y: pos.y}, history: [] });
-                drawOverlay();
+            } else if (editMode === 'add') {
+                trackers.push({ x: pos.x, y: pos.y, initial: {x: pos.x, y: pos.y}, history: [] });
+                sortAndReassignIDs();
+            } else if (editMode === 'move') {
+                if(clickedExistingIdx !== -1) draggedPoint = trackers[clickedExistingIdx];
             }
         }
     }
@@ -249,7 +268,7 @@
         } else if(draggedPoint) {
             draggedPoint.x = pos.x; draggedPoint.y = pos.y;
             // 追跡前なら初期位置も更新
-            if(!analysisDataReady && trackers[0] && trackers[0].history.length === 0) {
+            if(!analysisDataReady && draggedPoint.history.length === 0) {
                 draggedPoint.initial = {x: pos.x, y: pos.y};
             }
             drawOverlay();
@@ -265,9 +284,12 @@
                 scaleRatio = actualMm / pxDistance;
                 document.getElementById('scaleInfo').innerText = `1px = ${scaleRatio.toFixed(2)}mm`;
             }
-            mode = 'none';
+            mode = 'set_points';
         }
-        draggedPoint = null;
+        if(draggedPoint) {
+            draggedPoint = null;
+            sortAndReassignIDs(); // 移動後に順番が入れ替わった場合の対応
+        }
     }
 
     function drawOverlay() {
@@ -304,9 +326,10 @@
     document.getElementById('btnPauseTrack').onclick = () => {
         trackingPaused = true;
         mode = 'set_points'; // ドラッグ可能なモードに変更
+        document.querySelector('input[name="editMode"][value="move"]').checked = true; // 強制的に移動モード
         document.getElementById('btnPauseTrack').style.display = 'none';
         document.getElementById('btnResumeTrack').style.display = 'inline-block';
-        alert("追跡を一時停止しました。\n動画上の赤い点をドラッグして正しい位置に修正し、「追跡再開」を押してください。");
+        alert("追跡を一時停止しました。\nずれた点をドラッグして正しい位置に修正し、「追跡再開」を押してください。");
     };
 
     document.getElementById('btnResumeTrack').onclick = () => {
@@ -317,9 +340,9 @@
         processFrame(); // ループ再開
     };
 
-    // --- トラッキング処理本体 ---
+    // --- ★修正：速度予測トラッキング処理本体 ---
     function processFrame() {
-        if(trackingPaused) return; // 一時停止中はループを止める
+        if(trackingPaused) return; 
         
         if(video.currentTime >= video.duration || (video.paused && mode !== 'tracking')) {
             finishAnalysis(); return;
@@ -330,8 +353,8 @@
         const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
         let allRedPixels = [];
-        // 精度向上のため、探索半径を 15px に縮小（隣の点へのジャンプを防ぐ）
-        const searchRadius = 15; 
+        // 探索半径を広げて高速移動に対応 (30px)
+        const searchRadius = 30; 
 
         for(let y=0; y<canvas.height; y+=2) {
             for(let x=0; x<canvas.width; x+=2) {
@@ -344,12 +367,26 @@
             }
         }
 
+        // 各点の「次のフレームの予測位置」を計算
+        trackers.forEach(trk => {
+            trk.predicted_x = trk.x;
+            trk.predicted_y = trk.y;
+            // 履歴が2つ以上あれば、直前の速度ベクトルを加算して予測
+            if(trk.history.length >= 2) {
+                let p1 = trk.history[trk.history.length - 1];
+                let p2 = trk.history[trk.history.length - 2];
+                trk.predicted_x = trk.x + (p1.x - p2.x);
+                trk.predicted_y = trk.y + (p1.y - p2.y);
+            }
+        });
+
+        // 予測位置を基準に、最も近い点に赤ピクセルを排他割り当て
         let trackerPixels = trackers.map(() => []);
         allRedPixels.forEach(p => {
             let minDist = searchRadius;
             let closestTrackerIdx = -1;
             trackers.forEach((trk, i) => {
-                let dist = Math.hypot(trk.x - p.x, trk.y - p.y);
+                let dist = Math.hypot(trk.predicted_x - p.x, trk.predicted_y - p.y);
                 if(dist < minDist) {
                     minDist = dist;
                     closestTrackerIdx = i;
@@ -360,6 +397,7 @@
             }
         });
 
+        // 重心を更新
         trackers.forEach((trk, i) => {
             let pixels = trackerPixels[i];
             if(pixels.length > 0) {
@@ -367,7 +405,11 @@
                 pixels.forEach(p => { sumX += p.x; sumY += p.y; });
                 trk.x = sumX / pixels.length;
                 trk.y = sumY / pixels.length;
-            } // ピクセルが見つからない場合は前回位置（または手動修正位置）を維持
+            } else {
+                // ピクセルが見つからない場合は予測位置を採用して見失いを防ぐ
+                trk.x = trk.predicted_x;
+                trk.y = trk.predicted_y;
+            }
 
             const dispX = (trk.x - trk.initial.x) * scaleRatio;
             const dispY = (trk.y - trk.initial.y) * scaleRatio;
@@ -398,7 +440,8 @@
     }
 
     function finishAnalysis() {
-        mode = 'none'; analysisDataReady = true;
+        mode = 'set_points'; 
+        analysisDataReady = true;
         document.getElementById('btnAnalyze').style.display = 'inline-block';
         document.getElementById('btnPauseTrack').style.display = 'none';
         document.getElementById('btnResumeTrack').style.display = 'none';
@@ -457,7 +500,6 @@
             document.getElementById('resultsPanel').style.display = 'block';
             document.getElementById('propagationSpeedText').innerHTML = text;
 
-            // 最高速度と到達時間の算出と表示
             if(waveData.length > 0) {
                 let maxData = waveData.reduce((prev, current) => (prev.y > current.y) ? prev : current);
                 document.getElementById('maxSpeedInfo').innerHTML = `<strong style="color:#d9534f; font-size: 16px;">🏆 最高伝播速度: ${maxData.y.toFixed(1)} mm/s (到達時間: ${maxData.x.toFixed(3)} s)</strong>`;
@@ -478,7 +520,6 @@
             scales: { x: { type: 'linear', title: { display: true, text: '時間 (s) ※動き始めを0とする' } } }
         };
 
-        // 滑らかなスプライン曲線 (tension: 0.4) に設定
         const ctxWave = document.getElementById('waveVelChart').getContext('2d');
         waveVelChart = new Chart(ctxWave, {
             type: 'line',
@@ -488,7 +529,7 @@
                     data: waveData,
                     borderColor: '#e83e8c',
                     backgroundColor: 'rgba(232, 62, 140, 0.2)',
-                    tension: 0.4, // 滑らかな曲線
+                    tension: 0.4, 
                     fill: true,
                     pointRadius: 4,
                     borderWidth: 3
@@ -529,7 +570,6 @@
         });
     }
 
-    // --- 個別ドミノの表示切替ボタン生成 ---
     function buildCustomLegend() {
         const legendContainer = document.getElementById('customLegend');
         const btnContainer = document.getElementById('legendButtons');
