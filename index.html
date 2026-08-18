@@ -20,7 +20,6 @@
         .chart-container { position: relative; width: 100%; height: 400px; margin-bottom: 30px; }
         .info-text { font-size: 12px; color: #555; margin-top: 5px; }
         
-        /* 印刷用スタイル: 印刷時に不要な操作系を非表示 */
         @media print {
             body { background: #fff; }
             .container { box-shadow: none; max-width: 100%; }
@@ -56,7 +55,6 @@
         <strong>2. トラッキング設定 (赤い点の設定)</strong><br>
         <p class="info-text">
             ・「赤い点を自動検出」を押すと動画内の赤色を探します。<br>
-            ・手動で追加したい場合は「手動設定モード」にして動画をタップしてください。<br>
             ・設定された点は<strong>ドラッグして位置を微調整</strong>できます。
         </p>
         <div style="margin-top:10px;">
@@ -81,9 +79,14 @@
     </div>
 
     <div id="resultsPanel" class="panel" style="display:none;">
-        <strong>解析結果（伝播速度）</strong>
-        <p class="info-text">※最初のドミノが動き始めた時間を t=0 としてグラフを描画しています。</p>
+        <strong>解析結果（波の伝播速度）</strong>
+        <p class="info-text">※最初のドミノが動き始めた時間を t=0 としています。</p>
         <p id="propagationSpeedText" style="line-height: 1.6;"></p>
+    </div>
+
+    <!-- 波の伝播速度グラフ -->
+    <div class="chart-container">
+        <canvas id="waveVelChart"></canvas>
     </div>
 
     <div class="chart-container">
@@ -100,19 +103,18 @@
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
-    let scaleRatio = 1; // mm per pixel
-    let mode = 'none'; // 'calibrate', 'set_points', 'tracking'
+    let scaleRatio = 1; 
+    let mode = 'none'; 
     
-    // キャリブレーション用
     let calibStart = null;
     let calibEnd = null;
     let isDragging = false;
-    let draggedPoint = null; // 手動修正ドラッグ用
+    let draggedPoint = null; 
 
-    // トラッキング用
     let trackers = []; 
-    let dispChart, velChart;
-    let analysisDataReady = false; // CSV出力判定用
+    let dispChart, velChart, waveVelChart;
+    let analysisDataReady = false; 
+    let waveData = []; // 伝播速度グラフ用データ
 
     // --- イベントリスナー設定 ---
     document.getElementById('videoUpload').addEventListener('change', function(e) {
@@ -135,17 +137,13 @@
         if(mode !== 'tracking') drawOverlay();
     });
 
-    // --- 再生コントロール ---
     document.getElementById('btnPlay').onclick = () => video.paused ? video.play() : video.pause();
     document.getElementById('btnSlow').onclick = () => { video.playbackRate = video.playbackRate === 1.0 ? 0.5 : 1.0; };
-    
     function getFPS() { return parseFloat(document.getElementById('fpsInput').value) || 30; }
-
     document.getElementById('btnPrevFrame').onclick = () => { video.currentTime = Math.max(0, video.currentTime - 1/getFPS()); };
     document.getElementById('btnNextFrame').onclick = () => { video.currentTime = Math.min(video.duration, video.currentTime + 1/getFPS()); };
     document.getElementById('btnPrint').onclick = () => window.print();
 
-    // --- キャリブレーション＆ポイント設定 ---
     document.getElementById('btnCalibrate').onclick = () => { mode = 'calibrate'; calibStart = null; calibEnd = null; alert("画面をドラッグして基準線を引いてください。"); };
     document.getElementById('btnSetPoints').onclick = () => { mode = 'set_points'; alert("タップして点を追加、または既存の点をドラッグして移動できます。"); };
     document.getElementById('btnClearPoints').onclick = () => { trackers = []; drawOverlay(); };
@@ -157,29 +155,26 @@
         const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         
         let redPixels = [];
-        // 2px間隔でスキャンして赤色を抽出
         for(let y=0; y<canvas.height; y+=2) {
             for(let x=0; x<canvas.width; x+=2) {
                 let idx = (y*canvas.width + x) * 4;
                 let r = frameData.data[idx];
                 let g = frameData.data[idx+1];
                 let b = frameData.data[idx+2];
-                // 赤の判定条件
                 if(r > 150 && g < 100 && b < 100 && (r > g * 1.5)) {
                     redPixels.push({x, y});
                 }
             }
         }
 
-        // 簡易クラスタリング (近接するピクセルをまとめる)
         let clusters = [];
-        const distThreshold = 30; // 30px以内は同じドミノとみなす
+        const distThreshold = 30; 
         for(let p of redPixels) {
             let found = false;
             for(let c of clusters) {
                 if(Math.hypot(c.cx - p.x, c.cy - p.y) < distThreshold) {
                     c.points.push(p);
-                    c.cx = (c.cx * (c.points.length-1) + p.x) / c.points.length; // 重心更新
+                    c.cx = (c.cx * (c.points.length-1) + p.x) / c.points.length; 
                     c.cy = (c.cy * (c.points.length-1) + p.y) / c.points.length;
                     found = true;
                     break;
@@ -188,22 +183,16 @@
             if(!found) clusters.push({cx: p.x, cy: p.y, points: [p]});
         }
         
-        // 左から右へソート
         clusters.sort((a,b) => a.cx - b.cx);
-        
         trackers = clusters.map((c, i) => ({
-            id: i + 1,
-            x: c.cx, y: c.cy,
-            initial: {x: c.cx, y: c.cy},
-            history: []
+            id: i + 1, x: c.cx, y: c.cy, initial: {x: c.cx, y: c.cy}, history: []
         }));
         
         drawOverlay();
-        mode = 'set_points'; // 検出後、手動修正モードへ
+        mode = 'set_points'; 
         alert(trackers.length + " 個の赤い点を検出しました。ずれている場合はドラッグして修正してください。");
     };
 
-    // タッチ＆マウスイベント (iPad対応)
     function getPointerPos(e) {
         const rect = canvas.getBoundingClientRect();
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -226,7 +215,6 @@
             isDragging = true;
             calibStart = pos; calibEnd = pos;
         } else if(mode === 'set_points') {
-            // 既存のポイントがクリックされたかチェック (半径20px以内)
             let clickedExisting = null;
             for(let p of trackers) {
                 if(Math.hypot(p.x - pos.x, p.y - pos.y) < 20) {
@@ -234,15 +222,9 @@
                     break;
                 }
             }
-            if(clickedExisting) {
-                draggedPoint = clickedExisting;
-            } else {
-                trackers.push({
-                    id: trackers.length + 1,
-                    x: pos.x, y: pos.y,
-                    initial: {x: pos.x, y: pos.y},
-                    history: []
-                });
+            if(clickedExisting) draggedPoint = clickedExisting;
+            else {
+                trackers.push({ id: trackers.length + 1, x: pos.x, y: pos.y, initial: {x: pos.x, y: pos.y}, history: [] });
                 drawOverlay();
             }
         }
@@ -251,11 +233,9 @@
     function pointerMove(e) {
         const pos = getPointerPos(e);
         if(mode === 'calibrate' && isDragging) {
-            calibEnd = pos;
-            drawOverlay();
+            calibEnd = pos; drawOverlay();
         } else if(draggedPoint) {
-            draggedPoint.x = pos.x;
-            draggedPoint.y = pos.y;
+            draggedPoint.x = pos.x; draggedPoint.y = pos.y;
             draggedPoint.initial = {x: pos.x, y: pos.y};
             drawOverlay();
         }
@@ -275,67 +255,79 @@
         draggedPoint = null;
     }
 
-    // --- 描画 ---
     function drawOverlay() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
         if(calibStart && calibEnd) {
             ctx.beginPath(); ctx.moveTo(calibStart.x, calibStart.y); ctx.lineTo(calibEnd.x, calibEnd.y);
             ctx.strokeStyle = 'cyan'; ctx.lineWidth = 3; ctx.stroke();
         }
-
         trackers.forEach(t => {
-            ctx.beginPath();
-            ctx.arc(t.x, t.y, 6, 0, Math.PI * 2);
-            ctx.fillStyle = 'lime'; ctx.fill();
-            ctx.strokeStyle = 'black'; ctx.stroke();
+            ctx.beginPath(); ctx.arc(t.x, t.y, 6, 0, Math.PI * 2);
+            ctx.fillStyle = 'lime'; ctx.fill(); ctx.strokeStyle = 'black'; ctx.stroke();
             ctx.fillStyle = 'white'; ctx.font = "bold 16px Arial";
             ctx.fillText(t.id, t.x + 10, t.y - 10);
         });
     }
 
-    // --- 自動追跡と解析処理 ---
     document.getElementById('btnAnalyze').onclick = () => {
         if(trackers.length === 0) return alert("トラッキングポイントを設定してください");
-        mode = 'tracking';
-        analysisDataReady = false;
-        video.pause();
-        video.currentTime = 0; 
-        
+        mode = 'tracking'; analysisDataReady = false;
+        video.pause(); video.currentTime = 0; 
         trackers.forEach(t => { t.history = []; t.x = t.initial.x; t.y = t.initial.y; });
         setTimeout(processFrame, 500);
     };
 
+    // --- ★修正: K-meansライクな排他割り当て処理により融合を防止 ---
     function processFrame() {
         if(video.currentTime >= video.duration || (video.paused && mode !== 'tracking')) {
-            finishAnalysis();
-            return;
+            finishAnalysis(); return;
         }
-
         const t = video.currentTime;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-        trackers.forEach(trk => {
-            const searchRadius = 25;
-            let sumX = 0, sumY = 0, count = 0;
+        // 1. 各トラッカーの周辺の赤ピクセルをすべて取得
+        let allRedPixels = [];
+        const searchRadius = 25; // 探索範囲
 
-            const startX = Math.max(0, Math.floor(trk.x - searchRadius));
-            const startY = Math.max(0, Math.floor(trk.y - searchRadius));
-            const endX = Math.min(canvas.width, Math.floor(trk.x + searchRadius));
-            const endY = Math.min(canvas.height, Math.floor(trk.y + searchRadius));
-
-            for(let y = startY; y < endY; y++) {
-                for(let x = startX; x < endX; x++) {
-                    const idx = (y * canvas.width + x) * 4;
-                    const r = frameData.data[idx], g = frameData.data[idx+1], b = frameData.data[idx+2];
-                    if(r > 150 && g < 100 && b < 100 && (r > g * 1.5)) {
-                        sumX += x; sumY += y; count++;
-                    }
+        // 探索領域を限定して赤ピクセルを抽出
+        for(let y=0; y<canvas.height; y+=2) {
+            for(let x=0; x<canvas.width; x+=2) {
+                let r = frameData.data[(y * canvas.width + x) * 4];
+                let g = frameData.data[(y * canvas.width + x) * 4 + 1];
+                let b = frameData.data[(y * canvas.width + x) * 4 + 2];
+                if(r > 150 && g < 100 && b < 100 && (r > g * 1.5)) {
+                    allRedPixels.push({x, y});
                 }
             }
+        }
 
-            if(count > 0) { trk.x = sumX / count; trk.y = sumY / count; }
+        // 2. 赤ピクセルを最も近いトラッカーに割り当てる (排他処理)
+        let trackerPixels = trackers.map(() => []);
+        allRedPixels.forEach(p => {
+            let minDist = searchRadius;
+            let closestTrackerIdx = -1;
+            trackers.forEach((trk, i) => {
+                let dist = Math.hypot(trk.x - p.x, trk.y - p.y);
+                if(dist < minDist) {
+                    minDist = dist;
+                    closestTrackerIdx = i;
+                }
+            });
+            if(closestTrackerIdx !== -1) {
+                trackerPixels[closestTrackerIdx].push(p);
+            }
+        });
+
+        // 3. 割り当てられたピクセルの重心でトラッカーを更新
+        trackers.forEach((trk, i) => {
+            let pixels = trackerPixels[i];
+            if(pixels.length > 0) {
+                let sumX = 0, sumY = 0;
+                pixels.forEach(p => { sumX += p.x; sumY += p.y; });
+                trk.x = sumX / pixels.length;
+                trk.y = sumY / pixels.length;
+            }
 
             const dispX = (trk.x - trk.initial.x) * scaleRatio;
             const dispY = (trk.y - trk.initial.y) * scaleRatio;
@@ -366,18 +358,17 @@
     }
 
     function finishAnalysis() {
-        mode = 'none';
-        analysisDataReady = true;
+        mode = 'none'; analysisDataReady = true;
         alert("解析完了！グラフと伝播速度を表示します。");
         calculatePropagationAndShiftTime();
         drawGraphs();
     }
 
-    // --- 伝播速度計算 ＆ 動き始め(t=0)への時間シフト ---
     function calculatePropagationAndShiftTime() {
-        const thresholdV = 10; // 動き始めたと判定する速度(mm/s)
+        const thresholdV = 10; 
         let startTimes = [];
         let globalStartTime = null;
+        waveData = []; // 波の速度グラフ用データリセット
         
         trackers.forEach(trk => {
             const startPoint = trk.history.find(h => Math.abs(h.v) > thresholdV);
@@ -388,11 +379,8 @@
 
         if(startTimes.length > 0) {
             globalStartTime = Math.min(...startTimes.map(s => s.t));
-            
             trackers.forEach(trk => {
-                trk.history.forEach(h => {
-                    h.shifted_t = h.original_t - globalStartTime;
-                });
+                trk.history.forEach(h => { h.shifted_t = h.original_t - globalStartTime; });
             });
         }
 
@@ -411,6 +399,9 @@
                     let speed = distance / dt;
                     totalSpeed += speed;
                     validCount++;
+                    let shiftedT = startTimes[i].t - globalStartTime;
+                    waveData.push({ x: shiftedT, y: speed, label: `D${startTimes[i].id}→D${startTimes[i+1].id}` });
+                    
                     text += `[${startTimes[i].id} → ${startTimes[i+1].id}] 遅延: ${dt.toFixed(3)} s, 距離: ${distance.toFixed(1)} mm, 波の速度: <span style="color:#e83e8c; font-weight:bold;">${speed.toFixed(1)} mm/s</span><br>`;
                 }
             }
@@ -422,26 +413,12 @@
         }
     }
 
-    // --- グラフ描画 (Chart.js) ---
     function drawGraphs() {
         if(dispChart) dispChart.destroy();
         if(velChart) velChart.destroy();
+        if(waveVelChart) waveVelChart.destroy();
 
         const colors = ['#e6194B', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990', '#dcbeff', '#9A6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#a9a9a9'];
-
-        let dispDatasets = trackers.map((trk, i) => ({
-            label: `ドミノ ${trk.id}`,
-            data: trk.history.map(h => ({ x: h.shifted_t, y: h.disp })),
-            borderColor: colors[i % colors.length], fill: false, pointRadius: 0, borderWidth: 2,
-            tension: 0.1
-        }));
-
-        let velDatasets = trackers.map((trk, i) => ({
-            label: `ドミノ ${trk.id}`,
-            data: trk.history.map(h => ({ x: h.shifted_t, y: h.v })),
-            borderColor: colors[i % colors.length], fill: false, pointRadius: 0, borderWidth: 2,
-            tension: 0.1
-        }));
 
         const commonOptions = {
             responsive: true, maintainAspectRatio: false,
@@ -449,55 +426,86 @@
             scales: { x: { type: 'linear', title: { display: true, text: '時間 (s) ※動き始めを0とする' } } }
         };
 
+        // ★新機能：波の伝播速度のv-tグラフ
+        const ctxWave = document.getElementById('waveVelChart').getContext('2d');
+        waveVelChart = new Chart(ctxWave, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: '波の伝播速度 (先頭の速度)',
+                    data: waveData,
+                    borderColor: '#e83e8c',
+                    backgroundColor: '#e83e8c',
+                    showLine: true,
+                    stepped: 'middle', // 階段状に表示して区間速度を表現
+                    pointRadius: 5,
+                    borderWidth: 3
+                }]
+            },
+            options: { 
+                ...commonOptions, 
+                plugins: { 
+                    title: { display: true, text: '波全体の伝播速度 - 時間グラフ', font:{size: 16} },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.raw.label + " : " + context.raw.y.toFixed(2) + " mm/s";
+                            }
+                        }
+                    }
+                }, 
+                scales: { ...commonOptions.scales, y: { title: { display: true, text: '波の速度 (mm/s)' } } } 
+            }
+        });
+
+        // 既存グラフ
+        let dispDatasets = trackers.map((trk, i) => ({
+            label: `ドミノ ${trk.id}`,
+            data: trk.history.map(h => ({ x: h.shifted_t, y: h.disp })),
+            borderColor: colors[i % colors.length], fill: false, pointRadius: 0, borderWidth: 2, tension: 0.1
+        }));
+
+        let velDatasets = trackers.map((trk, i) => ({
+            label: `ドミノ ${trk.id}`,
+            data: trk.history.map(h => ({ x: h.shifted_t, y: h.v })),
+            borderColor: colors[i % colors.length], fill: false, pointRadius: 0, borderWidth: 2, tension: 0.1
+        }));
+
         const ctxVel = document.getElementById('velChart').getContext('2d');
         velChart = new Chart(ctxVel, {
             type: 'line', data: { datasets: velDatasets },
-            options: { ...commonOptions, plugins: { title: { display: true, text: '時間 - 速度グラフ (v-t)', font:{size: 16} } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '速度 (mm/s)' } } } }
+            options: { ...commonOptions, plugins: { title: { display: true, text: '各ドミノの速度 - 時間グラフ (v-t)', font:{size: 16} } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '速度 (mm/s)' } } } }
         });
 
         const ctxDisp = document.getElementById('dispChart').getContext('2d');
         dispChart = new Chart(ctxDisp, {
             type: 'line', data: { datasets: dispDatasets },
-            options: { ...commonOptions, plugins: { title: { display: true, text: '時間 - 変位グラフ (x-t)', font:{size: 16} } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '変位 (mm)' } } } }
+            options: { ...commonOptions, plugins: { title: { display: true, text: '各ドミノの変位 - 時間グラフ (x-t)', font:{size: 16} } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '変位 (mm)' } } } }
         });
     }
 
-    // --- CSVエクスポート ---
     document.getElementById('btnDownloadCSV').onclick = () => {
         if(!analysisDataReady) return alert("先に解析を実行してください。");
-        
         let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
-        
         let header = ["Shifted Time(s)", "Original Time(s)"];
-        trackers.forEach(t => {
-            header.push(`D${t.id}_Disp(mm)`);
-            header.push(`D${t.id}_Vel(mm/s)`);
-        });
+        trackers.forEach(t => { header.push(`D${t.id}_Disp(mm)`); header.push(`D${t.id}_Vel(mm/s)`); });
         csvContent += header.join(",") + "\r\n";
 
         const frameCount = trackers[0].history.length;
         for(let i=0; i<frameCount; i++) {
-            let row = [
-                trackers[0].history[i].shifted_t.toFixed(4),
-                trackers[0].history[i].original_t.toFixed(4)
-            ];
+            let row = [ trackers[0].history[i].shifted_t.toFixed(4), trackers[0].history[i].original_t.toFixed(4) ];
             trackers.forEach(t => {
                 let h = t.history[i];
-                row.push(h ? h.disp.toFixed(2) : "");
-                row.push(h ? h.v.toFixed(2) : "");
+                row.push(h ? h.disp.toFixed(2) : ""); row.push(h ? h.v.toFixed(2) : "");
             });
             csvContent += row.join(",") + "\r\n";
         }
-
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
         link.setAttribute("href", encodedUri);
         link.setAttribute("download", "domino_analysis_data.csv");
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        document.body.appendChild(link); link.click(); document.body.removeChild(link);
     };
 </script>
-
 </body>
 </html>
