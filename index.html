@@ -19,7 +19,7 @@
         button:hover { background: #0056b3; }
         .panel { padding: 15px; background: #eef; border-radius: 5px; margin-bottom: 15px; }
         .chart-container { position: relative; width: 100%; height: 400px; margin-bottom: 30px; }
-        .small-chart { height: 200px; margin-bottom: 15px; } /* 縦並べグラフ用 */
+        .small-chart { height: 200px; margin-bottom: 15px; } 
         .info-text { font-size: 12px; color: #555; margin-top: 5px; }
         .legend-btn { margin: 2px; padding: 4px 8px; font-size: 12px; background: #007bff; color: #fff; border: none; border-radius: 3px; cursor: pointer; }
         .legend-btn.off { background: #ccc; color: #333; }
@@ -69,10 +69,13 @@
                 <label><input type="radio" name="editMode" value="delete"> 削除</label>
             </div>
         </div>
-        <div style="margin-top: 15px;">
-            <button id="btnAnalyze" style="background:#ffc107; color:#000;">▶ 自動追跡を開始</button>
-            <button id="btnPauseTrack" style="background:#dc3545; display:none;">⏸ 一時停止 (手動修正)</button>
-            <button id="btnResumeTrack" style="background:#28a745; display:none;">▶ 追跡再開</button>
+        <div style="margin-top: 15px; background: #ffd; padding: 10px; border-radius: 5px; border: 1px solid #ffc107;">
+            <strong>【エラー修正の使い方】</strong> 追跡がズレた場合：①「一時停止」を押す ②シークバーで過去に戻る ③点をドラッグして直す ④「追跡再開」を押す
+            <div style="margin-top: 10px;">
+                <button id="btnAnalyze" style="background:#ffc107; color:#000;">▶ 自動追跡を開始</button>
+                <button id="btnPauseTrack" style="background:#dc3545; display:none;">⏸ 一時停止 (手動修正)</button>
+                <button id="btnResumeTrack" style="background:#28a745; display:none;">▶ 修正位置から追跡再開</button>
+            </div>
         </div>
     </div>
 
@@ -98,9 +101,9 @@
 
     <div id="resultsPanel" class="panel" style="display:none;">
         <strong>解析結果（波の伝播速度）</strong>
-        <p class="info-text">※先頭のドミノ（D1）が動き始めた時刻を t=0 とし、D1からの距離と経過時間から速度を算出しています。</p>
-        <p id="propagationSpeedText" style="line-height: 1.6; margin-bottom: 5px;"></p>
-        <div id="maxSpeedInfo"></div>
+        <p class="info-text">※最初のドミノが動き始めた時刻を t=0 とし、隣接するドミノ間（Dn-1 → Dn）の区間速度を算出しています。</p>
+        <p id="propagationSpeedText" style="line-height: 1.6; margin-bottom: 5px; max-height: 150px; overflow-y: auto; background: #fff; padding: 5px; border: 1px solid #ccc;"></p>
+        <div id="maxSpeedInfo" style="margin-top: 10px;"></div>
     </div>
 
     <div id="graphSettingsPanel" class="panel no-print" style="display:none; background: #e2f0d9;">
@@ -137,6 +140,7 @@
     let scaleRatio = 1; 
     let mode = 'set_points'; 
     let trackingPaused = false; 
+    let originalFileName = "domino_analysis"; // CSVファイル名用
     
     let calibStart = null;
     let calibEnd = null;
@@ -146,10 +150,10 @@
 
     let trackers = []; 
     let velChart, waveVelChart;
-    let dispCharts = []; // 個別変位グラフの配列
+    let dispCharts = []; 
     let analysisDataReady = false; 
     let waveData = []; 
-    let globalEndTime = 5; // グラフの最大値用
+    let globalEndTime = 5; 
 
     const colors = ['#e6194B', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990', '#dcbeff', '#9A6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#a9a9a9'];
 
@@ -157,6 +161,8 @@
     document.getElementById('videoUpload').addEventListener('change', function(e) {
         const file = e.target.files[0];
         if(!file) return;
+        // 拡張子を除いたファイル名を保存
+        originalFileName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
         video.src = URL.createObjectURL(file);
         video.load();
         trackers = [];
@@ -174,6 +180,27 @@
         drawOverlay();
     });
 
+    // シーク時のポイント履歴復元
+    function syncTrackersToCurrentTime() {
+        if (trackingPaused || analysisDataReady) {
+            const ct = video.currentTime;
+            trackers.forEach(trk => {
+                // 現在時刻に最も近い過去の履歴を探す
+                let closest = null;
+                for(let i = trk.history.length - 1; i >= 0; i--) {
+                    if(trk.history[i].original_t <= ct + 0.05) { // 誤差許容
+                        closest = trk.history[i];
+                        break;
+                    }
+                }
+                if(closest) {
+                    trk.x = closest.x;
+                    trk.y = closest.y;
+                }
+            });
+        }
+    }
+
     video.addEventListener('timeupdate', () => {
         const ct = video.currentTime;
         document.getElementById('timeDisplay').innerText = ct.toFixed(3);
@@ -181,7 +208,12 @@
             seekSlider.value = ct;
             document.getElementById('seekTimeCurrent').innerText = ct.toFixed(2);
         }
-        if(mode !== 'tracking') drawOverlay();
+        
+        // 解析後や一時停止中なら、その時刻の点位置を描画
+        if (mode !== 'tracking') {
+            syncTrackersToCurrentTime();
+            drawOverlay();
+        }
     });
 
     // シークバーの操作
@@ -293,7 +325,10 @@
             calibEnd = pos; drawOverlay();
         } else if(draggedPoint) {
             draggedPoint.x = pos.x; draggedPoint.y = pos.y;
-            if(!analysisDataReady && draggedPoint.history.length === 0) draggedPoint.initial = {x: pos.x, y: pos.y};
+            // 追跡前なら初期位置も更新
+            if(!analysisDataReady && !trackingPaused && draggedPoint.history.length === 0) {
+                draggedPoint.initial = {x: pos.x, y: pos.y};
+            }
             drawOverlay();
         }
     }
@@ -326,12 +361,14 @@
         });
     }
 
+    // --- 自動追跡の開始・一時停止・再開 ---
     document.getElementById('btnAnalyze').onclick = () => {
         if(trackers.length === 0) return alert("トラッキングポイントを設定してください");
         mode = 'tracking'; analysisDataReady = false; trackingPaused = false;
         document.getElementById('btnAnalyze').style.display = 'none';
         document.getElementById('btnPauseTrack').style.display = 'inline-block';
         document.getElementById('btnResumeTrack').style.display = 'none';
+        
         video.pause(); video.currentTime = 0; 
         trackers.forEach(t => { t.history = []; t.x = t.initial.x; t.y = t.initial.y; });
         setTimeout(processFrame, 500);
@@ -342,13 +379,20 @@
         document.querySelector('input[name="editMode"][value="move"]').checked = true;
         document.getElementById('btnPauseTrack').style.display = 'none';
         document.getElementById('btnResumeTrack').style.display = 'inline-block';
-        alert("追跡を一時停止しました。\nずれた点をドラッグして正しい位置に修正し、「追跡再開」を押してください。");
+        video.pause();
     };
 
     document.getElementById('btnResumeTrack').onclick = () => {
         trackingPaused = false; mode = 'tracking';
         document.getElementById('btnResumeTrack').style.display = 'none';
         document.getElementById('btnPauseTrack').style.display = 'inline-block';
+        
+        // 再開時刻より未来の履歴を消去して上書きしていく
+        const ct = video.currentTime;
+        trackers.forEach(trk => {
+            trk.history = trk.history.filter(h => h.original_t < ct);
+        });
+        
         processFrame(); 
     };
 
@@ -433,12 +477,11 @@
         document.getElementById('btnAnalyze').style.display = 'inline-block';
         document.getElementById('btnPauseTrack').style.display = 'none';
         document.getElementById('btnResumeTrack').style.display = 'none';
-        document.getElementById('graphSettingsPanel').style.display = 'block'; // グラフ範囲設定表示
+        document.getElementById('graphSettingsPanel').style.display = 'block'; 
         
         alert("解析完了！グラフと伝播速度を表示します。");
         calculatePropagationAndShiftTime();
         
-        // グラフの初期範囲をセット
         document.getElementById('graphMinTime').value = 0;
         document.getElementById('graphMaxTime').value = (globalEndTime || 5).toFixed(1);
 
@@ -446,7 +489,7 @@
         buildCustomLegend();
     }
 
-    // --- 伝播速度の計算 (先頭ドミノ基準に修正) ---
+    // --- 伝播速度の計算 (徐々に速度が上がる区間速度・折れ線グラフ) ---
     function calculatePropagationAndShiftTime() {
         const thresholdV = 10; 
         let startTimes = [];
@@ -462,35 +505,33 @@
 
         if(startTimes.length > 0) {
             startTimes.sort((a,b) => a.id - b.id);
-            globalStartTime = startTimes[0].t; // D1の動き始め
+            globalStartTime = startTimes[0].t; 
             
-            // 全てのデータの時間をシフト
             trackers.forEach(trk => {
                 trk.history.forEach(h => { h.shifted_t = h.original_t - globalStartTime; });
             });
 
-            // 終了時間（グラフの最大X軸用）
             let lastTracker = trackers[trackers.length-1];
             if(lastTracker.history.length > 0) {
                 globalEndTime = lastTracker.history[lastTracker.history.length-1].shifted_t;
             }
 
             let text = "";
-            let firstDomino = startTimes[0]; // 先頭のドミノ
-
-            // 先頭のドミノを基準にして速度を計算
+            
+            // 区間速度 (Dn-1 → Dn) で徐々に加速する様子を計算
             for(let i = 1; i < startTimes.length; i++) {
+                let prev = startTimes[i-1];
                 let current = startTimes[i];
-                let dt = current.t - firstDomino.t; // D1が動いてからの経過時間
-                let dpX = (current.x - firstDomino.x) * scaleRatio;
-                let dpY = (current.y - firstDomino.y) * scaleRatio;
-                let distance = Math.hypot(dpX, dpY); // D1からの距離
+                let dt = current.t - prev.t;
+                let dpX = (current.x - prev.x) * scaleRatio;
+                let dpY = (current.y - prev.y) * scaleRatio;
+                let distance = Math.hypot(dpX, dpY);
 
                 if(dt > 0) {
                     let speed = distance / dt;
-                    let shiftedT = current.t - globalStartTime;
-                    waveData.push({ x: shiftedT, y: speed, label: `D1 → D${current.id}` });
-                    text += `[D1 → D${current.id}] 到達時間: ${dt.toFixed(3)} s, 距離: ${distance.toFixed(1)} mm, 速度: <span style="color:#e83e8c;">${speed.toFixed(1)} mm/s</span><br>`;
+                    let shiftedT = current.t - globalStartTime; 
+                    waveData.push({ x: shiftedT, y: speed, label: `D${prev.id}→D${current.id}` });
+                    text += `[D${prev.id} → D${current.id}] 到達時間: ${dt.toFixed(3)} s, 距離: ${distance.toFixed(1)} mm, 速度: <span style="color:#e83e8c;">${speed.toFixed(1)} mm/s</span><br>`;
                 }
             }
             
@@ -499,7 +540,7 @@
 
             if(waveData.length > 0) {
                 let maxData = waveData.reduce((prev, current) => (prev.y > current.y) ? prev : current);
-                document.getElementById('maxSpeedInfo').innerHTML = `<strong style="color:#d9534f; font-size: 16px;">🏆 最高伝播速度: ${maxData.y.toFixed(1)} mm/s (D1からの到達時間: ${maxData.x.toFixed(3)} s)</strong>`;
+                document.getElementById('maxSpeedInfo').innerHTML = `<strong style="color:#d9534f; font-size: 16px;">🏆 最高伝播速度: ${maxData.y.toFixed(1)} mm/s (到達時間: ${maxData.x.toFixed(3)} s)</strong>`;
             }
         }
     }
@@ -522,13 +563,13 @@
             type: 'line',
             data: {
                 datasets: [{
-                    label: '波の伝播速度 (D1基準)',
+                    label: '波の伝播速度 (隣接ドミノ間の区間速度)',
                     data: waveData,
                     borderColor: '#e83e8c',
                     backgroundColor: 'rgba(232, 62, 140, 0.2)',
-                    tension: 0.4, 
-                    fill: true,
-                    pointRadius: 4,
+                    tension: 0, // ★直線（折れ線グラフ）に修正
+                    fill: false,
+                    pointRadius: 5,
                     borderWidth: 3
                 }]
             },
@@ -549,7 +590,7 @@
 
         // 変位グラフをドミノごとに縦に並べる
         const container = document.getElementById('dispChartsContainer');
-        container.innerHTML = '<h3>各ドミノの変位グラフ</h3>';
+        container.innerHTML = '<h3 style="text-align:center; color:#555;">▼ 各ドミノの変位グラフ ▼</h3>';
         dispCharts = [];
 
         trackers.forEach((trk, i) => {
@@ -581,7 +622,6 @@
         });
     }
 
-    // グラフの表示範囲（X軸）を手動更新するボタン
     document.getElementById('btnUpdateGraphRange').onclick = () => {
         let minT = parseFloat(document.getElementById('graphMinTime').value);
         let maxT = parseFloat(document.getElementById('graphMaxTime').value);
@@ -630,7 +670,10 @@
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
         link.setAttribute("href", encodedUri);
-        link.setAttribute("download", "domino_analysis_data.csv");
+        
+        // 動画ファイル名 + .csv で保存
+        link.setAttribute("download", originalFileName + ".csv");
+        
         document.body.appendChild(link); link.click(); document.body.removeChild(link);
     };
 </script>
