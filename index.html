@@ -14,11 +14,13 @@
         canvas { position: absolute; top: 0; left: 0; z-index: 10; touch-action: none; }
         .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 15px; align-items: center; justify-content: center;}
         button, input[type="file"], input[type="number"] { padding: 8px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; background: #fff;}
-        button { cursor: pointer; background: #007bff; color: white; border: none; font-weight: bold; }
+        button { cursor: pointer; background: #007bff; color: white; border: none; font-weight: bold; transition: background 0.2s; }
         button:hover { background: #0056b3; }
         .panel { padding: 15px; background: #eef; border-radius: 5px; margin-bottom: 15px; }
         .chart-container { position: relative; width: 100%; height: 400px; margin-bottom: 30px; }
         .info-text { font-size: 12px; color: #555; margin-top: 5px; }
+        .legend-btn { margin: 2px; padding: 4px 8px; font-size: 12px; background: #007bff; color: #fff; border: none; border-radius: 3px; cursor: pointer; }
+        .legend-btn.off { background: #ccc; color: #333; }
         
         @media print {
             body { background: #fff; }
@@ -55,13 +57,17 @@
         <strong>2. トラッキング設定 (赤い点の設定)</strong><br>
         <p class="info-text">
             ・「赤い点を自動検出」を押すと動画内の赤色を探します。<br>
-            ・設定された点は<strong>ドラッグして位置を微調整</strong>できます。
+            ・設定された点は<strong>ドラッグして位置を微調整</strong>できます。<br>
+            ・追跡中に点がずれた場合は、「一時停止」を押して点を正しい位置にドラッグ修正してから再開できます。
         </p>
         <div style="margin-top:10px;">
             <button id="btnAutoDetect" style="background:#e83e8c;">赤い点を自動検出</button>
             <button id="btnSetPoints" style="background:#28a745;">手動設定モード</button>
-            <button id="btnClearPoints" style="background:#dc3545;">リセット</button>
-            <button id="btnAnalyze" style="background:#ffc107; color:#000; margin-left: 20px;">自動追跡＆解析開始</button>
+            <button id="btnClearPoints" style="background:#6c757d;">リセット</button>
+            
+            <button id="btnAnalyze" style="background:#ffc107; color:#000; margin-left: 20px;">▶ 自動追跡を開始</button>
+            <button id="btnPauseTrack" style="background:#dc3545; display:none; margin-left: 20px;">⏸ 一時停止 (手動修正)</button>
+            <button id="btnResumeTrack" style="background:#28a745; display:none; margin-left: 20px;">▶ 追跡再開</button>
         </div>
     </div>
 
@@ -81,7 +87,8 @@
     <div id="resultsPanel" class="panel" style="display:none;">
         <strong>解析結果（波の伝播速度）</strong>
         <p class="info-text">※最初のドミノが動き始めた時間を t=0 としています。</p>
-        <p id="propagationSpeedText" style="line-height: 1.6;"></p>
+        <p id="propagationSpeedText" style="line-height: 1.6; margin-bottom: 5px;"></p>
+        <div id="maxSpeedInfo"></div>
     </div>
 
     <!-- 波の伝播速度グラフ -->
@@ -89,8 +96,12 @@
         <canvas id="waveVelChart"></canvas>
     </div>
 
+    <div id="customLegend" class="no-print" style="text-align: center; margin-bottom: 15px; display: none;">
+        <strong>各ドミノの表示切替: </strong>
+        <div id="legendButtons" style="display:inline-block; margin-left: 10px;"></div>
+    </div>
+
     <div class="chart-container">
-        <p class="info-text no-print" style="text-align: center;">※グラフ上部の凡例（ドミノ1, ドミノ2...）をタップすると表示/非表示を切り替えられます。</p>
         <canvas id="velChart"></canvas>
     </div>
     <div class="chart-container">
@@ -105,6 +116,7 @@
     
     let scaleRatio = 1; 
     let mode = 'none'; 
+    let trackingPaused = false; // 追跡の一時停止フラグ
     
     let calibStart = null;
     let calibEnd = null;
@@ -114,7 +126,7 @@
     let trackers = []; 
     let dispChart, velChart, waveVelChart;
     let analysisDataReady = false; 
-    let waveData = []; // 伝播速度グラフ用データ
+    let waveData = []; 
 
     // --- イベントリスナー設定 ---
     document.getElementById('videoUpload').addEventListener('change', function(e) {
@@ -236,7 +248,10 @@
             calibEnd = pos; drawOverlay();
         } else if(draggedPoint) {
             draggedPoint.x = pos.x; draggedPoint.y = pos.y;
-            draggedPoint.initial = {x: pos.x, y: pos.y};
+            // 追跡前なら初期位置も更新
+            if(!analysisDataReady && trackers[0] && trackers[0].history.length === 0) {
+                draggedPoint.initial = {x: pos.x, y: pos.y};
+            }
             drawOverlay();
         }
     }
@@ -269,28 +284,55 @@
         });
     }
 
+    // --- 自動追跡の開始・一時停止・再開 ---
     document.getElementById('btnAnalyze').onclick = () => {
         if(trackers.length === 0) return alert("トラッキングポイントを設定してください");
-        mode = 'tracking'; analysisDataReady = false;
+        
+        mode = 'tracking'; 
+        analysisDataReady = false;
+        trackingPaused = false;
+        
+        document.getElementById('btnAnalyze').style.display = 'none';
+        document.getElementById('btnPauseTrack').style.display = 'inline-block';
+        document.getElementById('btnResumeTrack').style.display = 'none';
+        
         video.pause(); video.currentTime = 0; 
         trackers.forEach(t => { t.history = []; t.x = t.initial.x; t.y = t.initial.y; });
         setTimeout(processFrame, 500);
     };
 
-    // --- ★修正: K-meansライクな排他割り当て処理により融合を防止 ---
+    document.getElementById('btnPauseTrack').onclick = () => {
+        trackingPaused = true;
+        mode = 'set_points'; // ドラッグ可能なモードに変更
+        document.getElementById('btnPauseTrack').style.display = 'none';
+        document.getElementById('btnResumeTrack').style.display = 'inline-block';
+        alert("追跡を一時停止しました。\n動画上の赤い点をドラッグして正しい位置に修正し、「追跡再開」を押してください。");
+    };
+
+    document.getElementById('btnResumeTrack').onclick = () => {
+        trackingPaused = false;
+        mode = 'tracking';
+        document.getElementById('btnResumeTrack').style.display = 'none';
+        document.getElementById('btnPauseTrack').style.display = 'inline-block';
+        processFrame(); // ループ再開
+    };
+
+    // --- トラッキング処理本体 ---
     function processFrame() {
+        if(trackingPaused) return; // 一時停止中はループを止める
+        
         if(video.currentTime >= video.duration || (video.paused && mode !== 'tracking')) {
             finishAnalysis(); return;
         }
+        
         const t = video.currentTime;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-        // 1. 各トラッカーの周辺の赤ピクセルをすべて取得
         let allRedPixels = [];
-        const searchRadius = 25; // 探索範囲
+        // 精度向上のため、探索半径を 15px に縮小（隣の点へのジャンプを防ぐ）
+        const searchRadius = 15; 
 
-        // 探索領域を限定して赤ピクセルを抽出
         for(let y=0; y<canvas.height; y+=2) {
             for(let x=0; x<canvas.width; x+=2) {
                 let r = frameData.data[(y * canvas.width + x) * 4];
@@ -302,7 +344,6 @@
             }
         }
 
-        // 2. 赤ピクセルを最も近いトラッカーに割り当てる (排他処理)
         let trackerPixels = trackers.map(() => []);
         allRedPixels.forEach(p => {
             let minDist = searchRadius;
@@ -319,7 +360,6 @@
             }
         });
 
-        // 3. 割り当てられたピクセルの重心でトラッカーを更新
         trackers.forEach((trk, i) => {
             let pixels = trackerPixels[i];
             if(pixels.length > 0) {
@@ -327,7 +367,7 @@
                 pixels.forEach(p => { sumX += p.x; sumY += p.y; });
                 trk.x = sumX / pixels.length;
                 trk.y = sumY / pixels.length;
-            }
+            } // ピクセルが見つからない場合は前回位置（または手動修正位置）を維持
 
             const dispX = (trk.x - trk.initial.x) * scaleRatio;
             const dispY = (trk.y - trk.initial.y) * scaleRatio;
@@ -350,7 +390,7 @@
             video.currentTime += 1/fps;
             video.addEventListener('seeked', function onSeeked() {
                 video.removeEventListener('seeked', onSeeked);
-                processFrame();
+                if(!trackingPaused) processFrame();
             });
         } else {
             finishAnalysis();
@@ -359,16 +399,21 @@
 
     function finishAnalysis() {
         mode = 'none'; analysisDataReady = true;
+        document.getElementById('btnAnalyze').style.display = 'inline-block';
+        document.getElementById('btnPauseTrack').style.display = 'none';
+        document.getElementById('btnResumeTrack').style.display = 'none';
+        
         alert("解析完了！グラフと伝播速度を表示します。");
         calculatePropagationAndShiftTime();
         drawGraphs();
+        buildCustomLegend();
     }
 
     function calculatePropagationAndShiftTime() {
         const thresholdV = 10; 
         let startTimes = [];
         let globalStartTime = null;
-        waveData = []; // 波の速度グラフ用データリセット
+        waveData = []; 
         
         trackers.forEach(trk => {
             const startPoint = trk.history.find(h => Math.abs(h.v) > thresholdV);
@@ -402,14 +447,21 @@
                     let shiftedT = startTimes[i].t - globalStartTime;
                     waveData.push({ x: shiftedT, y: speed, label: `D${startTimes[i].id}→D${startTimes[i+1].id}` });
                     
-                    text += `[${startTimes[i].id} → ${startTimes[i+1].id}] 遅延: ${dt.toFixed(3)} s, 距離: ${distance.toFixed(1)} mm, 波の速度: <span style="color:#e83e8c; font-weight:bold;">${speed.toFixed(1)} mm/s</span><br>`;
+                    text += `[${startTimes[i].id} → ${startTimes[i+1].id}] 遅延: ${dt.toFixed(3)} s, 距離: ${distance.toFixed(1)} mm, 速度: <span style="color:#e83e8c;">${speed.toFixed(1)} mm/s</span><br>`;
                 }
             }
             if(validCount > 0) {
                 text += `<br><strong>平均波速度: ${(totalSpeed/validCount).toFixed(1)} mm/s</strong>`;
             }
+            
             document.getElementById('resultsPanel').style.display = 'block';
             document.getElementById('propagationSpeedText').innerHTML = text;
+
+            // 最高速度と到達時間の算出と表示
+            if(waveData.length > 0) {
+                let maxData = waveData.reduce((prev, current) => (prev.y > current.y) ? prev : current);
+                document.getElementById('maxSpeedInfo').innerHTML = `<strong style="color:#d9534f; font-size: 16px;">🏆 最高伝播速度: ${maxData.y.toFixed(1)} mm/s (到達時間: ${maxData.x.toFixed(3)} s)</strong>`;
+            }
         }
     }
 
@@ -426,19 +478,19 @@
             scales: { x: { type: 'linear', title: { display: true, text: '時間 (s) ※動き始めを0とする' } } }
         };
 
-        // ★新機能：波の伝播速度のv-tグラフ
+        // 滑らかなスプライン曲線 (tension: 0.4) に設定
         const ctxWave = document.getElementById('waveVelChart').getContext('2d');
         waveVelChart = new Chart(ctxWave, {
             type: 'line',
             data: {
                 datasets: [{
-                    label: '波の伝播速度 (先頭の速度)',
+                    label: '波の伝播速度',
                     data: waveData,
                     borderColor: '#e83e8c',
-                    backgroundColor: '#e83e8c',
-                    showLine: true,
-                    stepped: 'middle', // 階段状に表示して区間速度を表現
-                    pointRadius: 5,
+                    backgroundColor: 'rgba(232, 62, 140, 0.2)',
+                    tension: 0.4, // 滑らかな曲線
+                    fill: true,
+                    pointRadius: 4,
                     borderWidth: 3
                 }]
             },
@@ -446,19 +498,12 @@
                 ...commonOptions, 
                 plugins: { 
                     title: { display: true, text: '波全体の伝播速度 - 時間グラフ', font:{size: 16} },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return context.raw.label + " : " + context.raw.y.toFixed(2) + " mm/s";
-                            }
-                        }
-                    }
+                    tooltip: { callbacks: { label: function(context) { return context.raw.label + " : " + context.raw.y.toFixed(2) + " mm/s"; } } }
                 }, 
                 scales: { ...commonOptions.scales, y: { title: { display: true, text: '波の速度 (mm/s)' } } } 
             }
         });
 
-        // 既存グラフ
         let dispDatasets = trackers.map((trk, i) => ({
             label: `ドミノ ${trk.id}`,
             data: trk.history.map(h => ({ x: h.shifted_t, y: h.disp })),
@@ -474,13 +519,40 @@
         const ctxVel = document.getElementById('velChart').getContext('2d');
         velChart = new Chart(ctxVel, {
             type: 'line', data: { datasets: velDatasets },
-            options: { ...commonOptions, plugins: { title: { display: true, text: '各ドミノの速度 - 時間グラフ (v-t)', font:{size: 16} } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '速度 (mm/s)' } } } }
+            options: { ...commonOptions, plugins: { title: { display: true, text: '各ドミノの速度 - 時間グラフ', font:{size: 16} }, legend: { display: false } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '速度 (mm/s)' } } } }
         });
 
         const ctxDisp = document.getElementById('dispChart').getContext('2d');
         dispChart = new Chart(ctxDisp, {
             type: 'line', data: { datasets: dispDatasets },
-            options: { ...commonOptions, plugins: { title: { display: true, text: '各ドミノの変位 - 時間グラフ (x-t)', font:{size: 16} } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '変位 (mm)' } } } }
+            options: { ...commonOptions, plugins: { title: { display: true, text: '各ドミノの変位 - 時間グラフ', font:{size: 16} }, legend: { display: false } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '変位 (mm)' } } } }
+        });
+    }
+
+    // --- 個別ドミノの表示切替ボタン生成 ---
+    function buildCustomLegend() {
+        const legendContainer = document.getElementById('customLegend');
+        const btnContainer = document.getElementById('legendButtons');
+        legendContainer.style.display = 'block';
+        btnContainer.innerHTML = '';
+
+        trackers.forEach((trk, i) => {
+            const btn = document.createElement('button');
+            btn.className = 'legend-btn';
+            btn.innerText = `D${trk.id}`;
+            btn.onclick = () => {
+                const isHidden = dispChart.data.datasets[i].hidden;
+                dispChart.data.datasets[i].hidden = !isHidden;
+                velChart.data.datasets[i].hidden = !isHidden;
+                dispChart.update();
+                velChart.update();
+                if(!isHidden) {
+                    btn.classList.add('off');
+                } else {
+                    btn.classList.remove('off');
+                }
+            };
+            btnContainer.appendChild(btn);
         });
     }
 
