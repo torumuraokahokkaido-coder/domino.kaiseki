@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ドミノ運動解析アプリ</title>
+    <!-- Chart.jsライブラリ読み込み -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: sans-serif; padding: 10px; background: #f4f4f9; }
+        body { font-family: sans-serif; padding: 10px; background: #f4f4f9; color: #333; }
         .container { max-width: 1000px; margin: 0 auto; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
         .video-container { position: relative; width: 100%; max-width: 800px; margin: 10px auto; border: 1px solid #ccc; background: #000; }
         video, canvas { display: block; width: 100%; height: auto; }
@@ -19,7 +20,7 @@
         .chart-container { position: relative; width: 100%; height: 400px; margin-bottom: 30px; }
         .info-text { font-size: 12px; color: #555; margin-top: 5px; }
         
-        /* 印刷用スタイル: 印刷時に不要なものを隠す */
+        /* 印刷用スタイル: 印刷時に不要な操作系を非表示 */
         @media print {
             body { background: #fff; }
             .container { box-shadow: none; max-width: 100%; }
@@ -163,7 +164,7 @@
                 let r = frameData.data[idx];
                 let g = frameData.data[idx+1];
                 let b = frameData.data[idx+2];
-                // 赤の判定条件 (調整可能)
+                // 赤の判定条件
                 if(r > 150 && g < 100 && b < 100 && (r > g * 1.5)) {
                     redPixels.push({x, y});
                 }
@@ -202,7 +203,7 @@
         alert(trackers.length + " 個の赤い点を検出しました。ずれている場合はドラッグして修正してください。");
     };
 
-    // タッチ＆マウスイベント
+    // タッチ＆マウスイベント (iPad対応)
     function getPointerPos(e) {
         const rect = canvas.getBoundingClientRect();
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -347,7 +348,6 @@
                 if(dt > 0) v = (totalDisp - prev.disp) / dt;
             }
 
-            // original_t に実際のビデオの時間を保存
             trk.history.push({ original_t: t, shifted_t: t, x: trk.x, y: trk.y, disp: totalDisp, v });
         });
 
@@ -387,10 +387,8 @@
         });
 
         if(startTimes.length > 0) {
-            // 全体で最も早く動き始めた時間を取得
             globalStartTime = Math.min(...startTimes.map(s => s.t));
             
-            // 全てのデータの時間をシフト (最初のドミノが動いた瞬間を 0.0 とする)
             trackers.forEach(trk => {
                 trk.history.forEach(h => {
                     h.shifted_t = h.original_t - globalStartTime;
@@ -398,7 +396,6 @@
             });
         }
 
-        // 伝播速度のテキスト生成
         if(startTimes.length >= 2) {
             startTimes.sort((a,b) => a.id - b.id);
             let text = "";
@@ -425,7 +422,7 @@
         }
     }
 
-    // --- グラフ描画 ---
+    // --- グラフ描画 (Chart.js) ---
     function drawGraphs() {
         if(dispChart) dispChart.destroy();
         if(velChart) velChart.destroy();
@@ -469,18 +466,15 @@
     document.getElementById('btnDownloadCSV').onclick = () => {
         if(!analysisDataReady) return alert("先に解析を実行してください。");
         
-        let csvContent = "data:text/csv;charset=utf-8,﻿"; // BOM付与で文字化け防止
+        let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
         
-        // ヘッダー作成
         let header = ["Shifted Time(s)", "Original Time(s)"];
         trackers.forEach(t => {
             header.push(`D${t.id}_Disp(mm)`);
             header.push(`D${t.id}_Vel(mm/s)`);
         });
-        csvContent += header.join(",") + "
-";
+        csvContent += header.join(",") + "\r\n";
 
-        // 行データ作成 (ベースの時間は tracker[0] を利用)
         const frameCount = trackers[0].history.length;
         for(let i=0; i<frameCount; i++) {
             let row = [
@@ -492,8 +486,7 @@
                 row.push(h ? h.disp.toFixed(2) : "");
                 row.push(h ? h.v.toFixed(2) : "");
             });
-            csvContent += row.join(",") + "
-";
+            csvContent += row.join(",") + "\r\n";
         }
 
         const encodedUri = encodeURI(csvContent);
@@ -504,7 +497,6 @@
         link.click();
         document.body.removeChild(link);
     };
-
 </script>
 
 </body>
