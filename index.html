@@ -58,6 +58,12 @@
 
     <div class="panel no-print">
         <strong>2. トラッキング設定 (赤い点の設定)</strong><br>
+        <div style="margin-top:5px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+            <label style="font-size: 14px; font-weight: bold; color: #d9534f;">赤色の認識感度:</label>
+            <input type="range" id="redThresholdSlider" min="50" max="200" value="130" style="width: 150px;">
+            <span id="redThresholdVal" style="font-size: 12px;">130</span>
+            <span class="info-text">※点がうまく検出されない場合は数値を下げてください。</span>
+        </div>
         <div style="margin-top:10px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
             <button id="btnAutoDetect" style="background:#e83e8c;">赤い点を自動検出</button>
             <button id="btnClearPoints" style="background:#6c757d;">リセット</button>
@@ -101,7 +107,7 @@
 
     <div id="resultsPanel" class="panel" style="display:none;">
         <strong>解析結果（波の伝播速度）</strong>
-        <p class="info-text">※最初のドミノが動き始めた時刻を t=0 とし、隣接するドミノ間（Dn-1 → Dn）の区間速度を算出しています。</p>
+        <p class="info-text">※最初のドミノが「動き始めた時刻(3mm以上変位した時)」を t=0 とし、隣接するドミノ間（Dn-1 → Dn）の区間速度を算出しています。</p>
         <p id="propagationSpeedText" style="line-height: 1.6; margin-bottom: 5px; max-height: 150px; overflow-y: auto; background: #fff; padding: 5px; border: 1px solid #ccc;"></p>
         <div id="maxSpeedInfo" style="margin-top: 10px;"></div>
     </div>
@@ -136,6 +142,7 @@
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const seekSlider = document.getElementById('seekSlider');
+    const redThresholdSlider = document.getElementById('redThresholdSlider');
     
     let scaleRatio = 1; 
     let mode = 'set_points'; 
@@ -157,7 +164,10 @@
 
     const colors = ['#e6194B', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990', '#dcbeff', '#9A6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#a9a9a9'];
 
-    // --- イベントリスナー設定 ---
+    redThresholdSlider.oninput = function() {
+        document.getElementById('redThresholdVal').innerText = this.value;
+    };
+
     document.getElementById('videoUpload').addEventListener('change', function(e) {
         const file = e.target.files[0];
         if(!file) return;
@@ -179,7 +189,6 @@
         drawOverlay();
     });
 
-    // シーク時のポイント履歴復元
     function syncTrackersToCurrentTime() {
         if (trackingPaused || analysisDataReady) {
             const ct = video.currentTime;
@@ -212,7 +221,6 @@
         }
     });
 
-    // シークバーの操作
     seekSlider.addEventListener('mousedown', () => isSeeking = true);
     seekSlider.addEventListener('touchstart', () => isSeeking = true, {passive: true});
     seekSlider.addEventListener('input', (e) => {
@@ -232,18 +240,22 @@
     document.getElementById('btnCalibrate').onclick = () => { mode = 'calibrate'; calibStart = null; calibEnd = null; alert("画面をドラッグして基準線を引いてください。"); };
     document.getElementById('btnClearPoints').onclick = () => { trackers = []; drawOverlay(); };
 
-    // --- 赤い点の自動検出 ---
     document.getElementById('btnAutoDetect').onclick = () => {
         if(!video.videoWidth) return alert("動画を読み込んでください");
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         
         let redPixels = [];
+        let threshold = parseInt(redThresholdSlider.value);
+
         for(let y=0; y<canvas.height; y+=2) {
             for(let x=0; x<canvas.width; x+=2) {
                 let idx = (y*canvas.width + x) * 4;
                 let r = frameData.data[idx], g = frameData.data[idx+1], b = frameData.data[idx+2];
-                if(r > 150 && g < 100 && b < 100 && (r > g * 1.5)) redPixels.push({x, y});
+                // 赤色判定 (スライダーのしきい値を適用)
+                if(r > threshold && g < r*0.7 && b < r*0.7) {
+                    redPixels.push({x, y});
+                }
             }
         }
 
@@ -356,7 +368,6 @@
         });
     }
 
-    // --- 自動追跡の開始・一時停止・再開 ---
     document.getElementById('btnAnalyze').onclick = () => {
         if(trackers.length === 0) return alert("トラッキングポイントを設定してください");
         mode = 'tracking'; analysisDataReady = false; trackingPaused = false;
@@ -385,13 +396,12 @@
         const ct = video.currentTime;
         trackers.forEach(trk => {
             trk.history = trk.history.filter(h => h.original_t < ct);
-            trk.lostFrames = 0; // 手動修正後は見失いカウントをリセット
+            trk.lostFrames = 0; 
         });
         
         processFrame(); 
     };
 
-    // --- トラッキング処理本体 ---
     function processFrame() {
         if(trackingPaused) return; 
         if(video.currentTime >= video.duration || (video.paused && mode !== 'tracking')) {
@@ -403,17 +413,18 @@
         const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
         let allRedPixels = [];
-        const searchRadius = 20; // 探索半径を縮小し、隣の点を拾いにくくする
+        const searchRadius = 30; // 探索範囲
+        let threshold = parseInt(redThresholdSlider.value);
+
         for(let y=0; y<canvas.height; y+=2) {
             for(let x=0; x<canvas.width; x+=2) {
-                let r = frameData.data[(y * canvas.width + x) * 4];
-                let g = frameData.data[(y * canvas.width + x) * 4 + 1];
-                let b = frameData.data[(y * canvas.width + x) * 4 + 2];
-                if(r > 150 && g < 100 && b < 100 && (r > g * 1.5)) allRedPixels.push({x, y});
+                let idx = (y*canvas.width + x) * 4;
+                let r = frameData.data[idx], g = frameData.data[idx+1], b = frameData.data[idx+2];
+                if(r > threshold && g < r*0.7 && b < r*0.7) allRedPixels.push({x, y});
             }
         }
 
-        // 1. 各点の予測位置を計算し、暴走を制限
+        // 予測位置の計算（マイルドな予測）
         trackers.forEach(trk => {
             trk.predicted_x = trk.x; trk.predicted_y = trk.y;
             if(trk.history.length >= 2) {
@@ -421,28 +432,16 @@
                 let vx = p1.x - p2.x; 
                 let vy = p1.y - p2.y;
                 
-                // ★速度リミッター (1フレームあたり最大15pxに制限)
-                let maxV = 15;
+                // 速度リミッター (15px/frameに制限)
                 let vLen = Math.hypot(vx, vy);
-                if(vLen > maxV) {
-                    vx = (vx / vLen) * maxV;
-                    vy = (vy / vLen) * maxV;
-                }
-                trk.predicted_x = trk.x + vx; 
-                trk.predicted_y = trk.y + vy;
+                if(vLen > 15) { vx = (vx/vLen)*15; vy = (vy/vLen)*15; }
+                
+                trk.predicted_x = trk.x + vx * 0.8; // 予測を少し抑えめにする
+                trk.predicted_y = trk.y + vy * 0.8;
             }
         });
 
-        // 2. 予測位置の段階でドミノの順序（交差）を補正
-        for(let i = 0; i < trackers.length - 1; i++) {
-            if(trackers[i].predicted_x > trackers[i+1].predicted_x) {
-                let mid = (trackers[i].predicted_x + trackers[i+1].predicted_x) / 2;
-                trackers[i].predicted_x = mid - 0.1;
-                trackers[i+1].predicted_x = mid + 0.1;
-            }
-        }
-
-        // 3. ピクセル割り当て
+        // ピクセル割り当て
         let trackerPixels = trackers.map(() => []);
         allRedPixels.forEach(p => {
             let minDist = searchRadius; let closestTrackerIdx = -1;
@@ -453,7 +452,7 @@
             if(closestTrackerIdx !== -1) trackerPixels[closestTrackerIdx].push(p);
         });
 
-        // 4. 重心更新
+        // 位置の更新（強制ロック排除）
         trackers.forEach((trk, i) => {
             let pixels = trackerPixels[i];
             if(pixels.length > 0) {
@@ -463,25 +462,12 @@
                 trk.lostFrames = 0;
             } else {
                 trk.lostFrames = (trk.lostFrames || 0) + 1;
-                // ★見失った場合は3フレームだけ予測し、それ以降はその場で止まる
                 if(trk.lostFrames <= 3) {
                     trk.x = trk.predicted_x; 
                     trk.y = trk.predicted_y;
-                }
+                } // 3フレーム以上見失ったらその場で待機
             }
-        });
 
-        // 5. 最終的な位置でも順序（交差）を補正
-        for(let i = 0; i < trackers.length - 1; i++) {
-            if(trackers[i].x > trackers[i+1].x) {
-                let mid = (trackers[i].x + trackers[i+1].x) / 2;
-                trackers[i].x = mid - 0.1;
-                trackers[i+1].x = mid + 0.1;
-            }
-        }
-
-        // 6. 履歴への保存
-        trackers.forEach(trk => {
             const dispX = (trk.x - trk.initial.x) * scaleRatio;
             const dispY = (trk.y - trk.initial.y) * scaleRatio;
             const totalDisp = Math.hypot(dispX, dispY);
@@ -526,15 +512,15 @@
         buildCustomLegend();
     }
 
-    // --- 伝播速度の計算 ---
+    // --- 伝播速度の計算 (ノイズに強い変位基準に変更) ---
     function calculatePropagationAndShiftTime() {
-        const thresholdV = 10; 
+        const thresholdDisp = 3.0; // ★動き始めの基準: 初期位置から3mm動いたら
         let startTimes = [];
         let globalStartTime = null;
         waveData = []; 
         
         trackers.forEach(trk => {
-            const startPoint = trk.history.find(h => Math.abs(h.v) > thresholdV);
+            const startPoint = trk.history.find(h => h.disp > thresholdDisp);
             if(startPoint) {
                 startTimes.push({ id: trk.id, t: startPoint.original_t, x: trk.initial.x, y: trk.initial.y });
             }
@@ -608,7 +594,7 @@
                     borderWidth: 3
                 }]
             },
-            options: { ...commonOptions, plugins: { title: { display: true, text: '波全体の伝播速度 - 時間グラフ', font:{size: 16} } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '波の速度 (mm/s)' } } } }
+            options: { ...commonOptions, plugins: { title: { display: true, text: '波全体の伝播速度 - 時間グラフ (折れ線)', font:{size: 16} } }, scales: { ...commonOptions.scales, y: { title: { display: true, text: '波の速度 (mm/s)' } } } }
         });
 
         let velDatasets = trackers.map((trk, i) => ({
